@@ -124,8 +124,7 @@ jobs:
           # 分页获取所有最近合并的PR
           while [ -n "$CURRENT_PAGE_URL" ]; do
             # 检查API速率限制
-            set -x
-            RATE_LIMIT=$(curl -s -I -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/rate_limit" | grep -i "x-ratelimit-remaining" | awk '{print $2}')
+            RATE_LIMIT=$(curl -s -I -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/rate_limit" | grep -i "x-ratelimit-remaining" | awk '{print $2}' || true)
             [ "$RATE_LIMIT" -lt 50 ] && echo "速率限制不足，暂停10分钟" && sleep 600
 
             # 请求当前页PR
@@ -144,7 +143,7 @@ jobs:
             echo "当前页合并PR数量: $(echo "$CURRENT_PAGE_MERGED_PR" | wc -w), 累计: $(echo "$ALL_MERGED_PR_NUMBERS" | wc -w)"
 
             # 获取下一页URL
-            CURRENT_PAGE_URL=$(echo "$LINK_HEADER" | grep -oP '<[^>]+>; rel="next"' | sed -E 's/<([^>]+)>; rel="next"/\1/')
+            CURRENT_PAGE_URL=$(echo "$LINK_HEADER" | grep -oP '<[^>]+>; rel="next"' | sed -E 's/<([^>]+)>; rel="next"/\1/'|| true)
             sleep 1  # 控制请求频率
           done
           
