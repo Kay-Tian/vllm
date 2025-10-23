@@ -131,7 +131,7 @@ jobs:
             TARGET_FILES_CHANGED=""
             while IFS= read -r watch_path; do
               [ -z "$watch_path" ] && continue
-              MATCHED_FILES=$(echo "$FILES" | grep -E "^$watch_path")
+              MATCHED_FILES=$(echo "$FILES" | grep -E "^$watch_path" || true)
               [ -n "$MATCHED_FILES" ] && TARGET_FILES_CHANGED+="$MATCHED_FILES"$'\n'
             done <<< "$WATCH_FILES"
             echo "TARGET_FILES_CHANGED : $TARGET_FILES_CHANGED"
