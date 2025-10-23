@@ -124,6 +124,7 @@ jobs:
           # 分页获取所有最近合并的PR
           while [ -n "$CURRENT_PAGE_URL" ]; do
             # 检查API速率限制
+            set -x
             RATE_LIMIT=$(curl -s -I -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/rate_limit" | grep -i "x-ratelimit-remaining" | awk '{print $2}')
             [ "$RATE_LIMIT" -lt 50 ] && echo "速率限制不足，暂停10分钟" && sleep 600
 
