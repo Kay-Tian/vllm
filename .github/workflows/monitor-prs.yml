@@ -126,7 +126,6 @@ jobs:
             FILES=$(echo "$FILES_BODY" | jq -r '.[]?.filename | select(. != null)')
             echo "FILES : $FILES"
             
-            set -x
             # 检查目标文件匹配
             TARGET_FILES_CHANGED=""
             while IFS= read -r watch_path; do
