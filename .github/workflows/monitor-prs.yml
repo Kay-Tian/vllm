@@ -76,7 +76,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.PAT }}
         run: |
           set -euo pipefail
-          set -x
 
           PROCESSED_PRS=$(cat .processed_prs.json)
           echo "当前已处理PR列表: $PROCESSED_PRS"
