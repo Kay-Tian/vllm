@@ -12,25 +12,48 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up tools
+      - name: Set up tools and authenticate gh CLI
         run: |
-          sudo apt-get install -y jq mailutils
-          # 安装并认证 GitHub CLI
+          # 安装依赖工具
+          sudo apt-get update && sudo apt-get install -y jq mailutils
+          
+          # 安装 GitHub CLI（gh）
           type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
           curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
             && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
             && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
             && sudo apt update \
             && sudo apt install gh -y
-          # 验证 gh 认证状态（关键！）
-          echo "验证 GitHub CLI 认证状态..."
-          if ! gh auth status; then
-            echo "❌ gh 认证失败，请检查 PAT 权限"
+          
+          # 验证 gh 安装成功
+          if ! command -v gh &> /dev/null; then
+            echo "❌ gh 安装失败，请检查安装步骤"
             exit 1
           fi
+          echo "✅ gh 安装成功，版本: $(gh --version)"
+          
+          # 关键：使用 PAT 认证 gh CLI（确保令牌正确传递）
+          echo "开始使用 PAT 认证 gh CLI..."
+          if [ -z "${{ secrets.PAT }}" ]; then
+            echo "❌ 未配置 PAT，请在仓库 Secrets 中添加 PAT"
+            exit 1
+          fi
+          
+          # 执行认证（直接通过管道传递令牌）
+          echo "${{ secrets.PAT }}" | gh auth login --with-token
+          
+          # 强制验证认证状态（检查是否有权限访问当前仓库）
+          echo "验证认证状态..."
+          if ! gh repo view ${{ github.repository }} &> /dev/null; then
+            echo "❌ gh 认证失败！可能原因："
+            echo "1. PAT 权限不足（需至少勾选 public_repo）"
+            echo "2. PAT 已过期或被撤销"
+            echo "3. Secrets 中 PAT 的名称不是 'PAT'"
+            exit 1
+          fi
+          echo "✅ gh 认证成功"
 
       - name: Restore processed PRs cache
-        id: cache-processed-prs
         uses: actions/cache@v3
         with:
           path: .processed_prs.json
@@ -43,11 +66,7 @@ jobs:
           if [ ! -f .processed_prs.json ]; then
             echo "[]" > .processed_prs.json
             echo "初始化空的已处理PR文件"
-          else
-            echo "已处理PR文件内容: $(cat .processed_prs.json)"
           fi
-          # 确保文件可写
-          chmod 644 .processed_prs.json
 
       - name: Fetch open PRs and check files
         env:
@@ -55,10 +74,8 @@ jobs:
           WATCH_FILES: |
             vllm/attention/layer.py
           GITHUB_TOKEN: ${{ secrets.PAT }}
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         run: |
           set -euo pipefail
-          # 启用调试模式（输出所有执行的命令）
           set -x
 
           PROCESSED_PRS=$(cat .processed_prs.json)
@@ -70,7 +87,7 @@ jobs:
           PR_HTTP_CODE=$(echo "$PR_RESPONSE" | tail -n1)
           PR_BODY=$(echo "$PR_RESPONSE" | head -n -1)
           if [ "$PR_HTTP_CODE" -ne 200 ]; then
-            echo "❌ 获取PR列表失败: $PR_HTTP_CODE"
+            echo "❌ 获取PR列表失败，状态码: $PR_HTTP_CODE"
             exit 1
           fi
           PR_LIST=$(echo "$PR_BODY" | jq -r '.[]?.number | select(. != null)')
@@ -79,7 +96,6 @@ jobs:
           for pr in $PR_LIST; do
             echo "=== 处理 PR #$pr ==="
             
-            # 检查是否已处理
             if echo "$PROCESSED_PRS" | jq -e --arg pr "$pr" '. | index($pr)' > /dev/null; then
               echo "PR #$pr 已处理，跳过"
               continue
@@ -89,116 +105,54 @@ jobs:
             PR_DETAIL_URL="https://api.github.com/repos/$TARGET_REPO/pulls/$pr"
             PR_DETAIL_RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$PR_DETAIL_URL")
             PR_DETAIL_HTTP_CODE=$(echo "$PR_DETAIL_RESPONSE" | tail -n1)
-            PR_DETAIL_BODY=$(echo "$PR_DETAIL_RESPONSE" | head -n -1)
             if [ "$PR_DETAIL_HTTP_CODE" -ne 200 ]; then
-              echo "❌ 获取PR #$pr 详情失败"
+              echo "❌ 获取PR #$pr 详情失败，跳过"
               continue
             fi
+            PR_DETAIL_BODY=$(echo "$PR_DETAIL_RESPONSE" | head -n -1)
             PR_TITLE=$(echo "$PR_DETAIL_BODY" | jq -r '.title')
-            PR_AUTHOR=$(echo "$PR_DETAIL_BODY" | jq -r '.user.login')
             PR_URL=$(echo "$PR_DETAIL_BODY" | jq -r '.html_url')
-            PR_CREATED_AT=$(echo "$PR_DETAIL_BODY" | jq -r '.created_at')
-            echo "PR信息: 标题=$PR_TITLE, 作者=$PR_AUTHOR, URL=$PR_URL"
 
             # 获取变更文件
             FILES_URL="https://api.github.com/repos/$TARGET_REPO/pulls/$pr/files"
             FILES_RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$FILES_URL")
             FILES_HTTP_CODE=$(echo "$FILES_RESPONSE" | tail -n1)
-            FILES_BODY=$(echo "$FILES_RESPONSE" | head -n -1)
             if [ "$FILES_HTTP_CODE" -ne 200 ]; then
-              echo "❌ 获取PR #$pr 变更文件失败"
+              echo "❌ 获取PR #$pr 变更文件失败，跳过"
               continue
             fi
+            FILES_BODY=$(echo "$FILES_RESPONSE" | head -n -1)
             FILES=$(echo "$FILES_BODY" | jq -r '.[]?.filename | select(. != null)')
-            echo "PR #$pr 变更文件: $FILES"
 
-            # 检查目标文件匹配（增加调试输出）
+            # 检查目标文件匹配
             TARGET_FILES_CHANGED=""
-            echo "开始匹配关注文件: $WATCH_FILES"
             while IFS= read -r watch_path; do
-              if [ -z "$watch_path" ]; then continue; fi
-              echo "检查是否匹配: $watch_path"
+              [ -z "$watch_path" ] && continue
               MATCHED_FILES=$(echo "$FILES" | grep -E "^$watch_path")
-              if [ -n "$MATCHED_FILES" ]; then
-                echo "匹配到文件: $MATCHED_FILES"
-                TARGET_FILES_CHANGED+="$MATCHED_FILES"$'\n'
-              fi
+              [ -n "$MATCHED_FILES" ] && TARGET_FILES_CHANGED+="$MATCHED_FILES"$'\n'
             done <<< "$WATCH_FILES"
 
-            echo "匹配到的目标文件: $TARGET_FILES_CHANGED"  # 关键调试输出
-
-            # 处理通知逻辑（若有匹配文件）
+            # 若有匹配文件，创建Issue
             if [ -n "$TARGET_FILES_CHANGED" ]; then
               FORMATTED_FILES=$(echo "$TARGET_FILES_CHANGED" | awk '{print "- " $0}' | head -10)
-              if [ $(echo "$TARGET_FILES_CHANGED" | wc -l) -gt 10 ]; then
-                FORMATTED_FILES+=$'\n- ... 更多文件'
-              fi
-
-              # 创建Issue（增加错误捕获）
-              echo "准备创建Issue..."
-              ISSUE_BODY=$(printf "## vLLM PR 监控通知\n\n**PR 标题**: %s  \n**PR 编号**: #%s  \n**作者**: @%s  \n**创建时间**: %s  \n**PR 链接**: %s  \n\n### 变更的核心文件:\n%s\n\n### 监控说明:\n此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。\n\n---\n*由GitHub Actions自动创建*" \
-                "$PR_TITLE" "$pr" "$PR_AUTHOR" "$PR_CREATED_AT" "$PR_URL" "$FORMATTED_FILES")
+              [ $(echo "$TARGET_FILES_CHANGED" | wc -l) -gt 10 ] && FORMATTED_FILES+=$'\n- ... 更多文件'
               
-              echo "Issue内容: $ISSUE_BODY"  # 输出Issue内容检查格式
+              ISSUE_BODY=$(printf "## vLLM PR 监控通知\n\n**PR 标题**: %s  \n**PR 编号**: #%s  \n**PR 链接**: %s  \n\n### 变更的核心文件:\n%s\n\n*由GitHub Actions自动创建*" \
+                "$PR_TITLE" "$pr" "$PR_URL" "$FORMATTED_FILES")
               
-              # 执行gh命令并捕获错误
-              if ! gh issue create \
+              echo "创建Issue通知..."
+              gh issue create \
                 --repo ${{ github.repository }} \
                 --title "vLLM PR #$pr 变更核心文件提醒" \
                 --body "$ISSUE_BODY" \
-                --label "vLLM-monitor" "PR-alert"; then
-                echo "❌ 创建Issue失败，继续执行后续步骤"
-                # 不退出，仅记录错误
-              fi
-
-              # Slack通知（若配置）
-              if [ -n "$SLACK_WEBHOOK" ]; then
-                SLACK_PAYLOAD=$(jq -n \
-                  --arg title "vLLM PR #$pr 变更核心文件提醒" \
-                  --arg author "$PR_AUTHOR" \
-                  --arg url "$PR_URL" \
-                  --arg files "$FORMATTED_FILES" \
-                  '{
-                    "text": "*vLLM PR 监控通知*",
-                    "attachments": [
-                      {
-                        "title": $title,
-                        "title_link": $url,
-                        "fields": [
-                          {"title": "作者", "value": $author, "short": true},
-                          {"title": "PR编号", "value": "#'"$pr"'", "short": true}
-                        ],
-                        "text": "*变更的核心文件:*\n" + $files,
-                        "color": "#FFA500"
-                      }
-                    ]
-                  }')
-                curl -X POST -H "Content-Type: application/json" -d "$SLACK_PAYLOAD" "$SLACK_WEBHOOK" || echo "❌ Slack通知失败"
-              fi
-            else
-              echo "PR #$pr 未修改关注的文件"
+                --label "vLLM-monitor"
             fi
 
-            # 标记PR为已处理（增加调试）
-            echo "更新已处理PR列表，添加 #$pr"
-            # 检查jq处理是否正确（PR编号作为字符串）
-            UPDATED_PRS=$(echo "$PROCESSED_PRS" | jq --arg pr_str "$pr" '. + [$pr_str]')
-            echo "更新后的PR列表: $UPDATED_PRS"
-            echo "$UPDATED_PRS" > .processed_prs.json
-            # 验证文件是否写入成功
-            if [ ! -s .processed_prs.json ]; then
-              echo "❌ 写入已处理PR文件失败"
-              exit 1
-            fi
-            PROCESSED_PRS="$UPDATED_PRS"
-
-            echo "PR #$pr 处理完成"
+            # 标记PR为已处理
+            PROCESSED_PRS=$(echo "$PROCESSED_PRS" | jq --arg pr "$pr" '. + [$pr]')
+            echo "$PROCESSED_PRS" > .processed_prs.json
           done
 
       - name: Clean up old PRs
         run: |
-          if [ -f .processed_prs.json ]; then
-            TRIMMED_PRS=$(jq 'if length > 100 then .[-100:] else . end' .processed_prs.json)
-            echo "$TRIMMED_PRS" > .processed_prs.json
-            echo "清理后保留的PR数量: $(jq '. | length' .processed_prs.json)"
-          fi
+          [ -f .processed_prs.json ] && jq 'if length > 100 then .[-100:] else . end' .processed_prs.json > .tmp.json && mv .tmp.json .processed_prs.json
