@@ -1,2 +1,17 @@
-# 注释：vLLM 核心模块（可选，# 开头为注释，会被忽略）
 vllm/attention/layer.py
+vllm/distributed/parallel_state.py
+vllm/model_executor/layers/activation.py
+vllm/model_executor/layers/fused_moe/layer.py
+vllm/model_executor/layers/layernorm.py
+vllm/model_executor/layers/linear.py
+vllm/model_executor/layers/logits_processor.py
+vllm/model_executor/layers/quantization/compressed_tensors/compressed_tensors_moe.py
+vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_wNa16.py
+vllm/model_executor/layers/quantization/gptq.py
+vllm/model_executor/layers/rotary_embedding/base.py
+vllm/model_executor/layers/vocab_parallel_embedding.py
+vllm/model_executor/models/
+vllm/v1/core/kv_cache_utils.py
+vllm/v1/engine/async_llm.py
+vllm/v1/engine/llm_engine.py
+vllm/v1/sample/ops/topk_topp_sampler.py
