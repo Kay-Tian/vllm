@@ -104,6 +104,7 @@ jobs:
             PR_DETAIL_URL="https://api.github.com/repos/$TARGET_REPO/pulls/$pr"
             PR_DETAIL_RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$PR_DETAIL_URL")
             PR_DETAIL_HTTP_CODE=$(echo "$PR_DETAIL_RESPONSE" | tail -n1)
+            echo "PR_DETAIL_HTTP_CODE : $PR_DETAIL_HTTP_CODE"
             if [ "$PR_DETAIL_HTTP_CODE" -ne 200 ]; then
               echo "❌ 获取PR #$pr 详情失败，跳过"
               continue
@@ -116,6 +117,7 @@ jobs:
             FILES_URL="https://api.github.com/repos/$TARGET_REPO/pulls/$pr/files"
             FILES_RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" "$FILES_URL")
             FILES_HTTP_CODE=$(echo "$FILES_RESPONSE" | tail -n1)
+            echo "FILES_HTTP_CODE : $FILES_HTTP_CODE"
             if [ "$FILES_HTTP_CODE" -ne 200 ]; then
               echo "❌ 获取PR #$pr 变更文件失败，跳过"
               continue
@@ -130,6 +132,7 @@ jobs:
               MATCHED_FILES=$(echo "$FILES" | grep -E "^$watch_path")
               [ -n "$MATCHED_FILES" ] && TARGET_FILES_CHANGED+="$MATCHED_FILES"$'\n'
             done <<< "$WATCH_FILES"
+            echo "TARGET_FILES_CHANGED : $TARGET_FILES_CHANGED"
 
             # 若有匹配文件，创建Issue
             if [ -n "$TARGET_FILES_CHANGED" ]; then
