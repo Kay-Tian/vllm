@@ -43,16 +43,16 @@ jobs:
           TARGET_REPO: "vllm-project/vllm"  # vLLM官方仓库
           # 关注的核心文件和目录，根据vLLM架构选择
           WATCH_FILES: |
-            vllm/core/
-            vllm/engine/
-            vllm/executor/
-            vllm/worker/
-            vllm/attention/
-            vllm/entrypoints/
-            setup.py
-            requirements.txt
-            pyproject.toml
-            Dockerfile
+            vllm/attention/layer.py
+            vllm/distributed/
+            vllm/model_executor/
+            vllm/v1/attention/
+            vllm/v1/config/
+            vllm/v1/core/
+            vllm/v1/engine/
+            vllm/v1/executor/
+            vllm/v1/sample/
+            vllm/v1/worker/
           GITHUB_TOKEN: ${{ secrets.PAT }}  # 个人访问令牌
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}  # Slack Webhook（可选）
           EMAIL_TO: ${{ secrets.EMAIL_TO }}  # 通知邮箱（可选）
@@ -116,25 +116,14 @@ jobs:
               
               # 3. 创建Issue通知
               echo "Creating issue for PR #$pr..."
-              ISSUE_BODY=$(cat <<EOF
-## vLLM PR 监控通知
-
-**PR 标题**: $PR_TITLE  
-**PR 编号**: #$pr  
-**作者**: @$PR_AUTHOR  
-**创建时间**: $PR_CREATED_AT  
-**PR 链接**: $PR_URL  
-
-### 变更的核心文件:
-$FORMATTED_FILES
-
-### 监控说明:
-此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。
-
----
-*由GitHub Actions自动创建*
-EOF
-              )
+              # 使用printf代替heredoc来避免YAML语法问题
+              ISSUE_BODY=$(printf "## vLLM PR 监控通知\n\n**PR 标题**: %s  \n**PR 编号**: #%s  \n**作者**: @%s  \n**创建时间**: %s  \n**PR 链接**: %s  \n\n### 变更的核心文件:\n%s\n\n### 监控说明:\n此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。\n\n---\n*由GitHub Actions自动创建*" \
+                "$PR_TITLE" \
+                "$pr" \
+                "$PR_AUTHOR" \
+                "$PR_CREATED_AT" \
+                "$PR_URL" \
+                "$FORMATTED_FILES")
               
               # 使用gh CLI创建issue
               gh issue create \
@@ -176,25 +165,14 @@ EOF
               if [ -n "$EMAIL_TO" ]; then
                 echo "Sending email notification for PR #$pr..."
                 EMAIL_SUBJECT="vLLM PR #$pr 变更核心文件提醒"
-                EMAIL_BODY=$(cat <<EOF
-vLLM PR 监控通知
-
-PR 标题: $PR_TITLE
-PR 编号: #$pr
-作者: @$PR_AUTHOR
-创建时间: $PR_CREATED_AT
-PR 链接: $PR_URL
-
-变更的核心文件:
-$FORMATTED_FILES
-
-监控说明:
-此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。
-
----
-由GitHub Actions自动创建
-EOF
-                )
+                # 使用printf代替heredoc来避免YAML语法问题
+                EMAIL_BODY=$(printf "vLLM PR 监控通知\n\nPR 标题: %s\nPR 编号: #%s\n作者: @%s\n创建时间: %s\nPR 链接: %s\n\n变更的核心文件:\n%s\n\n监控说明:\n此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。\n\n---\n由GitHub Actions自动创建" \
+                  "$PR_TITLE" \
+                  "$pr" \
+                  "$PR_AUTHOR" \
+                  "$PR_CREATED_AT" \
+                  "$PR_URL" \
+                  "$FORMATTED_FILES")
                 
                 # 使用mailutils发送邮件
                 echo "$EMAIL_BODY" | mail -s "$EMAIL_SUBJECT" "$EMAIL_TO"
