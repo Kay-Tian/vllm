@@ -12,6 +12,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate watch-files.txt exists
+        run: |
+          # 检查配置文件是否存在，不存在则报错退出
+          if [ ! -f "watch-files.txt" ]; then
+            echo "❌ 未找到 watch-files.txt，请在仓库根目录创建该文件"
+            exit 1
+          fi
+          echo "✅ 找到 watch-files.txt，准备读取监控列表"
+
+      - name: Read watch files from config
+        id: read_watch_files
+        run: |
+          # 读取配置文件，过滤注释（# 开头）和空行，保存为环境变量
+          # 使用 tr 替换换行符为空格，后续在循环中再拆分为行
+          WATCH_FILES=$(grep -v '^#\|^$' watch-files.txt | tr '\n' ' ')
+          echo "WATCH_FILES=$WATCH_FILES" >> $GITHUB_ENV  # 写入环境变量
+        
       - name: Set up tools and authenticate gh CLI
         run: |
           # 安装依赖工具
@@ -71,12 +88,15 @@ jobs:
       - name: Fetch open PRs and check files
         env:
           TARGET_REPO: "vllm-project/vllm"
-          WATCH_FILES: |
-            vllm/attention/layer.py
           GITHUB_TOKEN: ${{ secrets.PAT }}
         run: |
           set -euo pipefail
 
+          # 从环境变量中读取监控列表，替换空格为换行符（恢复为行格式）
+          WATCH_FILES=$(echo "$WATCH_FILES" | tr ' ' '\n')
+          echo "从 watch-files.txt 读取的监控列表:"
+          echo "$WATCH_FILES"
+          
           PROCESSED_PRS=$(cat .processed_prs.json)
           echo "当前已处理PR列表: $PROCESSED_PRS"
 
