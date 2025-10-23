@@ -1,0 +1,224 @@
+name: Monitor vLLM PR File Changes
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每小时运行一次
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  check-vllm-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up tools
+        run: |
+          sudo apt-get install -y jq
+          # 安装GitHub CLI
+          type -p curl >/dev/null || (sudo apt update && sudo apt install curl -y)
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+            && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+            && sudo apt update \
+            && sudo apt install gh -y
+
+      - name: Restore processed PRs cache
+        id: cache-processed-prs
+        uses: actions/cache@v3
+        with:
+          path: .processed_prs.json
+          key: processed-prs-${{ github.sha }}
+          restore-keys: |
+            processed-prs-
+
+      - name: Initialize processed PRs file if not exists
+        run: |
+          if [ ! -f .processed_prs.json ]; then
+            echo "[]" > .processed_prs.json
+          fi
+
+      - name: Fetch open PRs and check files
+        env:
+          TARGET_REPO: "vllm-project/vllm"  # vLLM官方仓库
+          # 关注的核心文件和目录，根据vLLM架构选择
+          WATCH_FILES: |
+            vllm/core/
+            vllm/engine/
+            vllm/executor/
+            vllm/worker/
+            vllm/attention/
+            vllm/entrypoints/
+            setup.py
+            requirements.txt
+            pyproject.toml
+            Dockerfile
+          GITHUB_TOKEN: ${{ secrets.PAT }}  # 个人访问令牌
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}  # Slack Webhook（可选）
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}  # 通知邮箱（可选）
+        run: |
+          # 读取已处理的PR列表
+          PROCESSED_PRS=$(cat .processed_prs.json)
+          
+          # 1. 获取vLLM仓库的open PR列表（最多100个）
+          echo "Fetching open PRs from $TARGET_REPO..."
+          PR_LIST=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$TARGET_REPO/pulls?state=open&per_page=100" | jq -r '.[] | .number')
+
+          # 2. 遍历每个PR，检查文件变更
+          for pr in $PR_LIST; do
+            echo "Checking PR #$pr..."
+            
+            # 检查PR是否已处理
+            if echo "$PROCESSED_PRS" | jq -e --arg pr "$pr" '. | index($pr)' > /dev/null; then
+              echo "PR #$pr already processed, skipping..."
+              continue
+            fi
+
+            # 获取该PR的详细信息
+            PR_DETAILS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$TARGET_REPO/pulls/$pr")
+            
+            PR_TITLE=$(echo "$PR_DETAILS" | jq -r '.title')
+            PR_AUTHOR=$(echo "$PR_DETAILS" | jq -r '.user.login')
+            PR_URL=$(echo "$PR_DETAILS" | jq -r '.html_url')
+            PR_CREATED_AT=$(echo "$PR_DETAILS" | jq -r '.created_at')
+            
+            # 获取该PR的变更文件列表
+            FILES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$TARGET_REPO/pulls/$pr/files" | jq -r '.[] | .filename')
+
+            # 检查是否包含关注的文件/目录
+            TARGET_FILES_CHANGED=""
+            while IFS= read -r watch_path; do
+              # 跳过空行
+              if [ -z "$watch_path" ]; then
+                continue
+              fi
+              
+              # 检查是否有文件匹配当前关注路径
+              MATCHED_FILES=$(echo "$FILES" | grep -E "^$watch_path")
+              if [ -n "$MATCHED_FILES" ]; then
+                TARGET_FILES_CHANGED+="$MATCHED_FILES"$'\n'
+              fi
+            done <<< "$WATCH_FILES"
+
+            # 如果有目标文件变更，执行通知
+            if [ -n "$TARGET_FILES_CHANGED" ]; then
+              echo "PR #$pr modified target files:"
+              echo "$TARGET_FILES_CHANGED"
+              
+              # 格式化文件变更列表
+              FORMATTED_FILES=$(echo "$TARGET_FILES_CHANGED" | awk '{print "- " $0}' | head -10)
+              if [ $(echo "$TARGET_FILES_CHANGED" | wc -l) -gt 10 ]; then
+                FORMATTED_FILES+=$'\n- ... and more files'
+              fi
+              
+              # 3. 创建Issue通知
+              echo "Creating issue for PR #$pr..."
+              ISSUE_BODY=$(cat <<EOF
+## vLLM PR 监控通知
+
+**PR 标题**: $PR_TITLE  
+**PR 编号**: #$pr  
+**作者**: @$PR_AUTHOR  
+**创建时间**: $PR_CREATED_AT  
+**PR 链接**: $PR_URL  
+
+### 变更的核心文件:
+$FORMATTED_FILES
+
+### 监控说明:
+此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。
+
+---
+*由GitHub Actions自动创建*
+EOF
+              )
+              
+              # 使用gh CLI创建issue
+              gh issue create \
+                --repo ${{ github.repository }} \
+                --title "vLLM PR #$pr 变更核心文件提醒" \
+                --body "$ISSUE_BODY" \
+                --label "vLLM-monitor" "PR-alert"
+
+              # 4. Slack通知（如果配置了Webhook）
+              if [ -n "$SLACK_WEBHOOK" ]; then
+                echo "Sending Slack notification for PR #$pr..."
+                SLACK_PAYLOAD=$(jq -n \
+                  --arg title "vLLM PR #$pr 变更核心文件提醒" \
+                  --arg author "$PR_AUTHOR" \
+                  --arg url "$PR_URL" \
+                  --arg files "$FORMATTED_FILES" \
+                  '{
+                    "text": "*vLLM PR 监控通知*",
+                    "attachments": [
+                      {
+                        "title": $title,
+                        "title_link": $url,
+                        "fields": [
+                          {"title": "作者", "value": $author, "short": true},
+                          {"title": "PR编号", "value": "#'"$pr"'", "short": true}
+                        ],
+                        "text": "*变更的核心文件:*\n" + $files,
+                        "color": "#FFA500"
+                      }
+                    ]
+                  }')
+                
+                curl -X POST -H "Content-Type: application/json" \
+                  -d "$SLACK_PAYLOAD" \
+                  "$SLACK_WEBHOOK"
+              fi
+
+              # 5. 邮件通知（如果配置了邮箱）
+              if [ -n "$EMAIL_TO" ]; then
+                echo "Sending email notification for PR #$pr..."
+                EMAIL_SUBJECT="vLLM PR #$pr 变更核心文件提醒"
+                EMAIL_BODY=$(cat <<EOF
+vLLM PR 监控通知
+
+PR 标题: $PR_TITLE
+PR 编号: #$pr
+作者: @$PR_AUTHOR
+创建时间: $PR_CREATED_AT
+PR 链接: $PR_URL
+
+变更的核心文件:
+$FORMATTED_FILES
+
+监控说明:
+此PR修改了vLLM的核心文件，需要关注其对性能、稳定性和功能的影响。
+
+---
+由GitHub Actions自动创建
+EOF
+                )
+                
+                # 使用mailutils发送邮件
+                echo "$EMAIL_BODY" | mail -s "$EMAIL_SUBJECT" "$EMAIL_TO"
+              fi
+            fi
+
+            # 将PR标记为已处理
+            PROCESSED_PRS=$(echo "$PROCESSED_PRS" | jq --arg pr "$pr" '. + [$pr]')
+          done
+
+          # 保存已处理的PR列表
+          echo "$PROCESSED_PRS" > .processed_prs.json
+
+      - name: Save processed PRs cache
+        uses: actions/cache@v3
+        with:
+          path: .processed_prs.json
+          key: processed-prs-${{ github.sha }}
+          restore-keys: |
+            processed-prs-
+
+      - name: Clean up old processed PRs (keep last 100)
+        run: |
+          PROCESSED_PRS=$(cat .processed_prs.json)
+          # 保留最新的100个PR
+          TRIMMED_PRS=$(echo "$PROCESSED_PRS" | jq 'if length > 100 then .[-100:] else . end')
+          echo "$TRIMMED_PRS" > .processed_prs.json
